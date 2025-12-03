@@ -1,0 +1,40 @@
+# Ignore compiled Python bytecode
+__pycache__/
+*.pyc
+*.pyd
+*.pyo
+
+# Ignore virtual environment directories
+venv/
+.venv/
+env/
+
+# Ignore log files
+*.log
+npm-debug.log*
+
+# Ignore temporary files
+*.tmp
+temp/
+tmp/
+
+# Ignore operating system generated files
+.DS_Store
+Thumbs.db
+
+# Ignore build artifacts and output directories
+build/
+dist/
+target/
+
+# Ignore sensitive information or local configuration files
+.env
+config.local.js
+credentials.txt
+
+# Ignore specific files by name
+my_secret_file.txt
+
+# Ignore everything in a directory except a specific file
+!important.txt
+my_folder/*
