@@ -148,7 +148,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if "FLAG:CRISIS" in ai_reply:
         final_reply = (
             "I hear deep pain in your words. Please, you are valuable.\n\n"
-            "📌 Contact your Priest or call emergency services immediately."
+            "📌 Contact your Priest(680727236)https://t.me/defpatrick or call emergency services immediately."
         )
         # Only notify admin if ID is set and valid
         if ADMIN_ID != 0:
