@@ -9,10 +9,10 @@ services:
     startCommand: python main.py
     envVars:
       - key: BOT_TOKEN
-        sync: true
+        sync: false
       - key: API_KEY
-        sync: true
+        sync: false
       - key: ENCRYPTION_KEY
-        sync: true
+        sync: false
       - key: PYTHON_VERSION
         value: 3.11.0
