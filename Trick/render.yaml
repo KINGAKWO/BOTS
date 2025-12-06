@@ -9,10 +9,10 @@ services:
     startCommand: python main.py
     envVars:
       - key: BOT_TOKEN
-        sync: false # false means you will enter the value in the dashboard manually
+        sync: true # false means you will enter the value in the dashboard manually
       - key: API_KEY
-        sync: false
+        sync: true
       - key: ENCRYPTION_KEY
-        sync: false
+        sync: true
       - key: PYTHON_VERSION
         value: 3.11.0
