@@ -1,7 +1,9 @@
 import logging
 import os
-import sqlite3
+import sqlite3  # Kept for compatibility, but aiosqlite is used for async operations
 import threading
+import signal
+import asyncio
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
 from cryptography.fernet import Fernet
@@ -11,23 +13,56 @@ from google.genai import types
 from telegram import Update
 from telegram.ext import CommandHandler, MessageHandler, filters, ContextTypes, ApplicationBuilder
 
+import aiosqlite  # Async-safe DB operations
+
 
 # Hosting.......................................................................................
 # this class creates a dummy web server so Render doesn't kill the bot
 class HealthCheckHandler(BaseHTTPRequestHandler):
+    """Simple health check HTTP handler."""
     def do_GET(self):
+        """Respond to GET requests with a basic health message."""
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"Bot is running")
 
+
+HEALTH_SERVER = None
+HEALTH_SERVER_THREAD = None
+
+
 def start_health_server():
- # Render assigns the port via the PORT environment variable
+    """
+    Start the health check HTTP server in the current thread.
+
+    Uses the PORT environment variable (default 8080). The server reference is
+    stored globally to allow graceful shutdown via HEALTH_SERVER.shutdown().
+    """
+    global HEALTH_SERVER
     port = int(os.environ.get("PORT", 8080))
     server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+    HEALTH_SERVER = server
     print(f"Health check server listening on port {port}")
     server.serve_forever()
-# ----------------------------------------------------------------------------------------------
 
+
+def stop_health_server():
+    """
+    Stop the health check server gracefully if it is running.
+
+    Calls shutdown() and server_close() on the HTTPServer instance.
+    """
+    global HEALTH_SERVER
+    if HEALTH_SERVER is not None:
+        try:
+            HEALTH_SERVER.shutdown()
+            HEALTH_SERVER.server_close()
+            print("Health check server stopped.")
+        except Exception as exc:
+            print(f"Failed to stop health check server: {exc}")
+        finally:
+            HEALTH_SERVER = None
+# ----------------------------------------------------------------------------------------------
 
 
 # Bot identity
@@ -57,36 +92,67 @@ logger = logging.getLogger(__name__)
 # Database setup
 DB_FILE = 'ministry.db'
 
-
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS logs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        timestamp TEXT,
-        sender TEXT,
-        encrypted_content TEXT
-    )''')
-    conn.commit()
-    conn.close()
+# Async DB lock for thread safety when used alongside the HTTP server thread
+DB_LOCK = asyncio.Lock()
 
 
-def log_securely(user_id, sender_type, text):
+async def init_db():
+    """
+    Initialize the SQLite database asynchronously.
+
+    Creates the 'logs' table if it does not exist.
+    """
+    async with aiosqlite.connect(DB_FILE) as conn:
+        await conn.execute('''CREATE TABLE IF NOT EXISTS logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            timestamp TEXT,
+            sender TEXT,
+            encrypted_content TEXT
+        )''')
+        await conn.commit()
+
+
+async def log_securely(user_id, sender_type, text):
+    """
+    Encrypt and log content to the database asynchronously.
+
+    Parameters
+    ----------
+    user_id : int
+        Telegram user ID.
+    sender_type : str
+        Either "USER" or "BOT".
+    text : str
+        Plaintext message to be encrypted and stored.
+    """
     try:
         encrypted_blob = cipher.encrypt(text.encode()).decode()
-        conn = sqlite3.connect(DB_FILE)
-        c = conn.cursor()
-        c.execute("INSERT INTO logs(user_id, timestamp, sender, encrypted_content) VALUES (?,?,?,?)",
-                  (user_id, datetime.now().isoformat(), sender_type, encrypted_blob))
-        conn.commit()
-        conn.close()
+        async with DB_LOCK:  # Ensure thread-safety if other threads interact
+            async with aiosqlite.connect(DB_FILE) as conn:
+                await conn.execute(
+                    "INSERT INTO logs(user_id, timestamp, sender, encrypted_content) VALUES (?,?,?,?)",
+                    (user_id, datetime.now().isoformat(), sender_type, encrypted_blob)
+                )
+                await conn.commit()
     except Exception as e:
         logger.error(f"Logging failed: {e}")
 
 
-# Gemini response function
 async def get_gemini_response(user_text):
+    """
+    Get a response from Gemini asynchronously.
+
+    Parameters
+    ----------
+    user_text : str
+        The user's input text.
+
+    Returns
+    -------
+    str
+        The model's response or an error message if the call fails.
+    """
     try:
         response = await client.aio.models.generate_content(
             model='gemini-2.0-flash',
@@ -109,14 +175,44 @@ You are a warm, wise Catholic spiritual companion.
                 stop_sequences=['\n\n\n'],
             ),
         )
-
-        # Removed the stray chat/file/tuning creation calls that were here.
-        # They should not be called every time a user sends a message.
-
         return response.text
     except Exception as e:
         logger.error(f"Gemini Error: {e}")
         return "I am having trouble contemplating right now, Please try again in a moment"
+
+
+async def safe_admin_alert(bot, admin_id, text):
+    """
+    Send an admin alert with retry logic for robustness.
+
+    Tries up to 3 times with exponential backoff-like delays.
+
+    Parameters
+    ----------
+    bot : telegram.Bot
+        The bot instance used to send the message.
+    admin_id : int
+        The admin chat ID.
+    text : str
+        The alert message content.
+
+    Returns
+    -------
+    bool
+        True if the alert was sent successfully, False otherwise.
+    """
+    if admin_id == 0:
+        return False
+
+    delays = [1, 2, 4]
+    for attempt, delay in enumerate(delays, start=1):
+        try:
+            await bot.send_message(chat_id=admin_id, text=text)
+            return True
+        except Exception as exc:
+            logger.error(f"Admin alert attempt {attempt} failed: {exc}")
+            await asyncio.sleep(delay)
+    return False
 
 
 # Telegram handlers
@@ -155,8 +251,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Show typing action while waiting for AI
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
-    # Log user input
-    log_securely(user_id, "USER", user_text)
+    # Log user input (async-safe)
+    await log_securely(user_id, "USER", user_text)
 
     # Get AI response
     ai_reply = await get_gemini_response(user_text)
@@ -179,31 +275,62 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"📝 Message: {user_text}\n"
                 f"🤖 AI Reply: {ai_reply}"
             )
-            try:
-                await context.bot.send_message(chat_id=ADMIN_ID, text=alert_message)
-            except Exception as e:
-                logger.error(f"Failed to alert admin: {e}")
+            await safe_admin_alert(context.bot, ADMIN_ID, alert_message)
     else:
         final_reply = ai_reply
 
     # Reply and log
     await update.message.reply_text(final_reply)
-    log_securely(user_id, "BOT", final_reply)
+    await log_securely(user_id, "BOT", final_reply)
 
 
-# Entry point
-if __name__ == '__main__':
-    # starting dummy web server
-    threading.Thread(target=start_health_server, daemon=True).start()
+async def main():
+    """
+    Main entrypoint to start the bot with async-safe DB, robust admin alerts,
+    and graceful shutdown handling.
+    """
+    # starting dummy web server in a separate thread
+    global HEALTH_SERVER_THREAD
+    HEALTH_SERVER_THREAD = threading.Thread(target=start_health_server, daemon=True)
+    HEALTH_SERVER_THREAD.start()
 
     # Bot logic
-    init_db()
+    await init_db()
     application = ApplicationBuilder().token(Token).build()
 
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('help', help_command))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
 
-    # start polling
-    print("Bot is running...")
-    application.run_polling()
+    # Graceful shutdown: handle SIGINT and SIGTERM
+    shutdown_event = asyncio.Event()
+
+    def _signal_handler(signum, frame):
+        """
+        Signal handler to trigger graceful shutdown.
+
+        Sets the shutdown_event so the main coroutine can stop the application
+        and close resources cleanly.
+        """
+        logger.info(f"Received signal {signum}. Initiating graceful shutdown...")
+        shutdown_event.set()
+
+    signal.signal(signal.SIGINT, _signal_handler)
+    signal.signal(signal.SIGTERM, _signal_handler)
+
+    # Run polling in the background task
+    async with application:
+        await application.start()
+        logger.info("Bot is running...")
+        # Wait until a shutdown signal is received
+        await shutdown_event.wait()
+
+        # Stop application and cleanup
+        await application.stop()
+        await application.shutdown()
+        stop_health_server()
+
+
+# Entry point
+if __name__ == '__main__':
+    asyncio.run(main())
