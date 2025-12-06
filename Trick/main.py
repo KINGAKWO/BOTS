@@ -1,6 +1,8 @@
 import logging
 import os
 import sqlite3
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
 from cryptography.fernet import Fernet
 from dotenv import load_dotenv
@@ -8,6 +10,25 @@ from google import genai
 from google.genai import types
 from telegram import Update
 from telegram.ext import CommandHandler, MessageHandler, filters, ContextTypes, ApplicationBuilder
+
+
+# Hosting.......................................................................................
+# this class creates a dummy web server so Render doesn't kill the bot
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is running")
+
+def start_health_server():
+ # Render assigns the port via the PORT environment variable
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+    print(f"Health check server listening on port {port}")
+    server.serve_forever()
+# ----------------------------------------------------------------------------------------------
+
+
 
 # Bot identity
 BOT_USERNAME = "@BiblicalCounselorBot"
@@ -172,6 +193,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Entry point
 if __name__ == '__main__':
+    # starting dummy web server
+    threading.Thread(target=start_health_server, daemon=True).start()
+
+    # Bot logic
     init_db()
     application = ApplicationBuilder().token(Token).build()
 
@@ -179,5 +204,6 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler('help', help_command))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
 
+    # start polling
     print("Bot is running...")
     application.run_polling()
