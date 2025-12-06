@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: catholic-companion-bot
+    env: python
+    region: ohio # or frankfurt, oregon, etc.
+    plan: free
+    rootDir: Trick # Points Render to your bot's subfolder
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false # false means you will enter the value in the dashboard manually
+      - key: API_KEY
+        sync: false
+      - key: ENCRYPTION_KEY
+        sync: false
+      - key: PYTHON_VERSION
+        value: 3.11.0
