@@ -143,24 +143,44 @@ async def log_securely(user_id, sender_type, text):
         logger.error(f"Logging failed: {e}")
 
 
-async def get_gemini_response(user_text):
+# Global throttle lock and timestamp
+LAST_REQUEST_TIME = 0
+THROTTLE_LOCK = asyncio.Lock()
+THROTTLE_INTERVAL = 2.0  # seconds between requests (tune as needed)
+
+
+async def get_gemini_response(user_text, context=None):
     """
-    Get a response from Gemini asynchronously.
+    Get a response from Gemini asynchronously with quota-aware fallback and throttling.
 
     Parameters
     ----------
     user_text : str
         The user's input text.
+    context : telegram.ext.CallbackContext, optional
+        Context for sending admin alerts if quota is exceeded.
 
     Returns
     -------
     str
-        The model's response or an error message if the call fails.
+        The model's response or a graceful fallback message.
     """
+    global LAST_REQUEST_TIME
+
     try:
+        # --- Throttle requests ---
+        async with THROTTLE_LOCK:
+            now = asyncio.get_event_loop().time()
+            elapsed = now - LAST_REQUEST_TIME
+            if elapsed < THROTTLE_INTERVAL:
+                wait_time = THROTTLE_INTERVAL - elapsed
+                await asyncio.sleep(wait_time)
+            LAST_REQUEST_TIME = asyncio.get_event_loop().time()
+
+        # --- Call Gemini ---
         response = await client.aio.models.generate_content(
             model='gemini-2.0-flash',
-            contents=user_text,  # Pass user text directly
+            contents=user_text,
             config=types.GenerateContentConfig(
                 system_instruction="""
 You are a warm, wise Catholic spiritual companion.
@@ -175,14 +195,34 @@ You are a warm, wise Catholic spiritual companion.
                 top_k=2,
                 top_p=0.5,
                 temperature=0.5,
-                # Removed 'application/json' so the bot replies in normal text
                 stop_sequences=['\n\n\n'],
             ),
         )
         return response.text
+
     except Exception as e:
-        logger.error(f"Gemini Error: {e}")
-        return "I am having trouble contemplating right now, Please try again in a moment"
+        error_msg = str(e)
+
+        # --- Quota exceeded handling ---
+        if "RESOURCE_EXHAUSTED" in error_msg or "429" in error_msg:
+            fallback = (
+                "⚠️ Gemini quota exceeded. Please try again later or check your billing plan.\n"
+                "See: https://ai.google.dev/gemini-api/docs/rate-limits"
+            )
+            # Notify admin if available
+            if context and ADMIN_ID != 0:
+                try:
+                    await context.bot.send_message(
+                        chat_id=ADMIN_ID,
+                        text=f"⚠️ Gemini quota exhausted.\nUser text: {user_text}\nError: {error_msg}"
+                    )
+                except Exception as alert_exc:
+                    logger.error(f"Failed to alert admin about quota: {alert_exc}")
+            return fallback
+
+        # --- Generic error fallback ---
+        logger.error(f"Gemini Error: {error_msg}")
+        return "I am having trouble contemplating right now, please try again in a moment."
 
 
 async def safe_admin_alert(bot, admin_id, text):
