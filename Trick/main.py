@@ -42,7 +42,7 @@ def start_health_server():
     global HEALTH_SERVER
     host = os.environ.get("HOST", "0.0.0.0")
     port = int(os.environ.get("PORT", 5000))
-    server = HTTPServer(('127.0.0.1', port), HealthCheckHandler)
+    server = HTTPServer((host, port), HealthCheckHandler)
     HEALTH_SERVER = server
     print(f"Health check server listening on port {port}")
     server.serve_forever()
@@ -236,7 +236,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📖 *Bot Help*\n\n"
         "Here’s what I can do:\n"
         "• I can help find scripture or pray with you\n"
-        "• Summarize text,explain or generate creative writing\n"
         "• Crisis safety check: if I detect distress, I’ll respond with supportive guidance\n"
         "• Admin alert: I notify the owner if a crisis is flagged\n\n"
         "Commands:\n"
