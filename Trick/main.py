@@ -20,6 +20,7 @@ import aiosqlite  # Async-safe DB operations
 # this class creates a dummy web server so Render doesn't kill the bot
 class HealthCheckHandler(BaseHTTPRequestHandler):
     """Simple health check HTTP handler."""
+
     def do_GET(self):
         """Respond to GET requests with a basic health message."""
         self.send_response(200)
@@ -39,8 +40,8 @@ def start_health_server():
     stored globally to allow graceful shutdown via HEALTH_SERVER.shutdown().
     """
     global HEALTH_SERVER
-    port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+    port = int(os.environ.get("PORT", 5000))
+    server = HTTPServer(('127.0.0.1', port), HealthCheckHandler)
     HEALTH_SERVER = server
     print(f"Health check server listening on port {port}")
     server.serve_forever()
@@ -62,6 +63,8 @@ def stop_health_server():
             print(f"Failed to stop health check server: {exc}")
         finally:
             HEALTH_SERVER = None
+
+
 # ----------------------------------------------------------------------------------------------
 
 
@@ -284,53 +287,42 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await log_securely(user_id, "BOT", final_reply)
 
 
-async def main():
+def main():
     """
-    Main entrypoint to start the bot with async-safe DB, robust admin alerts,
-    and graceful shutdown handling.
+    Synchronous entrypoint:
+    - Set Windows selector event loop policy (avoids Proactor issues).
+    - Create and set a current event loop in MainThread (PTB expects one).
+    - Run async DB init on that loop.
+    - Start health server thread.
+    - Run telegram polling (blocking).
     """
-    # starting dummy web server in a separate thread
+    if os.name == 'nt':
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     global HEALTH_SERVER_THREAD
     HEALTH_SERVER_THREAD = threading.Thread(target=start_health_server, daemon=True)
     HEALTH_SERVER_THREAD.start()
 
-    # Bot logic
-    await init_db()
-    application = ApplicationBuilder().token(Token).build()
+    loop.run_until_complete(init_db())
 
+    application = ApplicationBuilder().token(Token).build()
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('help', help_command))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
 
-    # Graceful shutdown: handle SIGINT and SIGTERM
-    shutdown_event = asyncio.Event()
-
-    def _signal_handler(signum, frame):
-        """
-        Signal handler to trigger graceful shutdown.
-
-        Sets the shutdown_event so the main coroutine can stop the application
-        and close resources cleanly.
-        """
-        logger.info(f"Received signal {signum}. Initiating graceful shutdown...")
-        shutdown_event.set()
-
-    signal.signal(signal.SIGINT, _signal_handler)
-    signal.signal(signal.SIGTERM, _signal_handler)
-
-    # Run polling in the background task
-    async with application:
-        await application.start()
-        logger.info("Bot is running...")
-        # Wait until a shutdown signal is received
-        await shutdown_event.wait()
-
-        # Stop application and cleanup
-        await application.stop()
-        await application.shutdown()
+    try:
+        application.run_polling()
+    finally:
+        #  Cleanup health server after polling stops
         stop_health_server()
+        try:
+            loop.close()
+        except Exception:
+            pass
 
 
-# Entry point
 if __name__ == '__main__':
-    asyncio.run(main())
+    main()
