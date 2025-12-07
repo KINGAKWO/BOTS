@@ -40,6 +40,7 @@ def start_health_server():
     stored globally to allow graceful shutdown via HEALTH_SERVER.shutdown().
     """
     global HEALTH_SERVER
+    host = os.environ.get("HOST", "0.0.0.0")
     port = int(os.environ.get("PORT", 5000))
     server = HTTPServer(('127.0.0.1', port), HealthCheckHandler)
     HEALTH_SERVER = server
@@ -234,9 +235,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_message = (
         "📖 *Bot Help*\n\n"
         "Here’s what I can do:\n"
-        "• Answer questions and explain concepts using Gemini AI\n"
-        "• Summarize text or generate creative writing\n"
-        "• Provide coding explanations and study support\n"
+        "• I can help find scripture or pray with you\n"
+        "• Summarize text,explain or generate creative writing\n"
         "• Crisis safety check: if I detect distress, I’ll respond with supportive guidance\n"
         "• Admin alert: I notify the owner if a crisis is flagged\n\n"
         "Commands:\n"
