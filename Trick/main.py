@@ -59,7 +59,7 @@ load_dotenv()
 Token = os.getenv("BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")  # Changed from API_KEY
 ENCRYPTION = os.getenv("ENCRYPTION_KEY")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+ADMIN_ID = os.getenv("ADMIN_ID", "0")
 
 # Check for missing keys - UPDATED
 if not all([Token, OPENROUTER_API_KEY, ENCRYPTION]):
