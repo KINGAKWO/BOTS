@@ -1,4 +1,4 @@
-##Lewis: Catholic Spiritual Companion Bot ✝️🤖
+#Lewis: Catholic Spiritual Companion Bot ✝️🤖
 A Telegram chatbot named "Lewis" designed to provide spiritual comfort, biblical encouragement, and pastoral listening using AI, while maintaining strict safety guardrails and user privacy.
 
 Note: This bot is NOT a replacement for a priest, psychologist, or medical professional. It is a supportive companion with built-in crisis protocols.
