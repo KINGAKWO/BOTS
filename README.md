@@ -129,7 +129,3 @@ Open a Pull Request
 
 📄 License
 Distributed under the MIT License. See the LICENSE file for more information.
-
-Let me know if you'd like to add a visual diagram of the bot's architecture or a more detailed "How It Works" flowchart to the README!
-
-This response is AI-generated, for reference only.
