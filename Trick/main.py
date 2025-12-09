@@ -5,6 +5,7 @@ import threading
 import signal
 import asyncio
 from openai import AsyncOpenAI  # Changed from langchain imports
+from openai import OpenAI
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
 from cryptography.fernet import Fernet
@@ -59,13 +60,18 @@ load_dotenv()
 Token = os.getenv("BOT_TOKEN")
 if not Token:
     raise ValueError("missing token")
+
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")  # Changed from API_KEY
 if not OPENROUTER_API_KEY:
     raise ValueError("missing openrouter key")
+
 ENCRYPTION = os.getenv("ENCRYPTION_KEY")
 if not ENCRYPTION:
     raise ValueError("missing ENCRYPTION")
+
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+if not ADMIN_ID:
+    raise ValueError("missing ID ")
 
 # Check for missing keys - UPDATED
 if not all([Token, OPENROUTER_API_KEY, ENCRYPTION, ADMIN_ID]):
@@ -73,7 +79,7 @@ if not all([Token, OPENROUTER_API_KEY, ENCRYPTION, ADMIN_ID]):
 
 # Configure OpenRouter client - NEW
 openrouter_client = AsyncOpenAI(
-    base_url="https://openrouter.ai/api/v1",
+    base_url="https://openrouter.ai/api/v1/chat/completions",
     api_key=OPENROUTER_API_KEY,
     default_headers={
         "HTTP-Referer": "https://catholic-companion-bot.onrender.com",  # Optional but recommended
