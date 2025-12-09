@@ -5,7 +5,6 @@ import threading
 import signal
 import asyncio
 from openai import AsyncOpenAI  # Changed from langchain imports
-from openai import OpenAI
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
 from cryptography.fernet import Fernet
@@ -79,8 +78,9 @@ if not all([Token, OPENROUTER_API_KEY, ENCRYPTION, ADMIN_ID]):
 
 # Configure OpenRouter client - NEW
 openrouter_client = AsyncOpenAI(
-    base_url="https://openrouter.ai/api/v1/chat/completions",
+    base_url="https://openrouter.ai/api/v1",
     api_key=OPENROUTER_API_KEY,
+    timeout=30.0,
     default_headers={
         "HTTP-Referer": "https://catholic-companion-bot.onrender.com",  # Optional but recommended
         "X-Title": "Biblical Counselor Bot",  # Optional but recommended
@@ -193,6 +193,7 @@ async def get_ai_response(user_text, context=None):
             return response.choices[0].message.content
 
         except Exception as fallback_error:
+            logger.exception(f"CRITICAL: Both models failed. Full traceback:")
             error_msg = str(fallback_error)
             logger.error(f"Both models failed: {error_msg}")
 
