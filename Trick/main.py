@@ -1,28 +1,22 @@
 import logging
 import os
-import sqlite3  # Kept for compatibility, but aiosqlite is used for async operations
+import sqlite3
 import threading
 import signal
 import asyncio
+from openai import AsyncOpenAI  # Changed from langchain imports
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
 from cryptography.fernet import Fernet
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
 from telegram import Update
 from telegram.ext import CommandHandler, MessageHandler, filters, ContextTypes, ApplicationBuilder
-
-import aiosqlite  # Async-safe DB operations
+import aiosqlite
 
 
 # Hosting.......................................................................................
-# this class creates a dummy web server so Render doesn't kill the bot
 class HealthCheckHandler(BaseHTTPRequestHandler):
-    """Simple health check HTTP handler."""
-
     def do_GET(self):
-        """Respond to GET requests with a basic health message."""
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"Bot is running")
@@ -33,12 +27,6 @@ HEALTH_SERVER_THREAD = None
 
 
 def start_health_server():
-    """
-    Start the health check HTTP server in the current thread.
-
-    Uses the PORT environment variable (default 8080). The server reference is
-    stored globally to allow graceful shutdown via HEALTH_SERVER.shutdown().
-    """
     global HEALTH_SERVER
     host = os.environ.get("HOST", "0.0.0.0")
     port = int(os.environ.get("PORT", 5000))
@@ -49,11 +37,6 @@ def start_health_server():
 
 
 def stop_health_server():
-    """
-    Stop the health check server gracefully if it is running.
-
-    Calls shutdown() and server_close() on the HTTPServer instance.
-    """
     global HEALTH_SERVER
     if HEALTH_SERVER is not None:
         try:
@@ -68,25 +51,30 @@ def stop_health_server():
 
 # ----------------------------------------------------------------------------------------------
 
-
 # Bot identity
 BOT_USERNAME = "@BiblicalCounselorBot"
 
 # Load environment variables
 load_dotenv()
 Token = os.getenv("BOT_TOKEN")
-API = os.getenv("API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")  # Changed from API_KEY
 ENCRYPTION = os.getenv("ENCRYPTION_KEY")
-# Default to 0 if not set, ensuring int type
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
-# Check for missing keys
-if not all([Token, API, ENCRYPTION]):
-    raise ValueError("Missing Keys in .env file!")
+# Check for missing keys - UPDATED
+if not all([Token, OPENROUTER_API_KEY, ENCRYPTION]):
+    raise ValueError("Missing Keys in .env file! Check BOT_TOKEN, OPENROUTER_API_KEY, ENCRYPTION_KEY")
 
-# Configure Gemini and encryption
-# Note: Ensure you are using the latest google-genai SDK
-client = genai.Client(api_key=API)
+# Configure OpenRouter client - NEW
+openrouter_client = AsyncOpenAI(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=OPENROUTER_API_KEY,
+    default_headers={
+        "HTTP-Referer": "https://your-bot-url.com",  # Optional but recommended
+        "X-Title": "Biblical Counselor Bot",  # Optional but recommended
+    },
+)
+
 cipher = Fernet(ENCRYPTION.encode())
 
 # Logging setup
@@ -95,17 +83,14 @@ logger = logging.getLogger(__name__)
 
 # Database setup
 DB_FILE = 'ministry.db'
-
-# Async DB lock for thread safety when used alongside the HTTP server thread
 DB_LOCK = asyncio.Lock()
+
+# Model constants - NEW
+PRIMARY_MODEL = "google/gemini-2.0-flash-exp:free"  # Primary: Gemini 2.0 Flash Experimental
+FALLBACK_MODEL = "amazon/nova-2-lite-v1:free"  # Fallback: Nova 2 Lite
 
 
 async def init_db():
-    """
-    Initialize the SQLite database asynchronously.
-
-    Creates the 'logs' table if it does not exist.
-    """
     async with aiosqlite.connect(DB_FILE) as conn:
         await conn.execute('''CREATE TABLE IF NOT EXISTS logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -118,21 +103,9 @@ async def init_db():
 
 
 async def log_securely(user_id, sender_type, text):
-    """
-    Encrypt and log content to the database asynchronously.
-
-    Parameters
-    ----------
-    user_id : int
-        Telegram user ID.
-    sender_type : str
-        Either "USER" or "BOT".
-    text : str
-        Plaintext message to be encrypted and stored.
-    """
     try:
         encrypted_blob = cipher.encrypt(text.encode()).decode()
-        async with DB_LOCK:  # Ensure thread-safety if other threads interact
+        async with DB_LOCK:
             async with aiosqlite.connect(DB_FILE) as conn:
                 await conn.execute(
                     "INSERT INTO logs(user_id, timestamp, sender, encrypted_content) VALUES (?,?,?,?)",
@@ -146,105 +119,93 @@ async def log_securely(user_id, sender_type, text):
 # Global throttle lock and timestamp
 LAST_REQUEST_TIME = 0
 THROTTLE_LOCK = asyncio.Lock()
-THROTTLE_INTERVAL = 2.0  # seconds between requests (tune as needed)
+THROTTLE_INTERVAL = 2.0  # seconds between requests
 
 
-async def get_gemini_response(user_text, context=None):
+async def get_ai_response(user_text, context=None):
     """
-    Get a response from Gemini asynchronously with quota-aware fallback and throttling.
-
-    Parameters
-    ----------
-    user_text : str
-        The user's input text.
-    context : telegram.ext.CallbackContext, optional
-        Context for sending admin alerts if quota is exceeded.
-
-    Returns
-    -------
-    str
-        The model's response or a graceful fallback message.
+    Get a response using OpenRouter with fallback between Gemini 2.0 Flash and Nova 2 Lite.
     """
     global LAST_REQUEST_TIME
 
+    # Throttling logic remains the same
+    async with THROTTLE_LOCK:
+        now = asyncio.get_event_loop().time()
+        elapsed = now - LAST_REQUEST_TIME
+        if elapsed < THROTTLE_INTERVAL:
+            await asyncio.sleep(THROTTLE_INTERVAL - elapsed)
+        LAST_REQUEST_TIME = asyncio.get_event_loop().time()
+
+    # System prompt for spiritual companion
+    system_prompt = """You are a warm, wise Catholic spiritual companion.
+    1. DOCTRINE: Use the RSV-CE Bible. Stick to the Catechism (CCC).
+    2. TONE: Compassionate, like a wise elder or priest. Not robotic.
+    3. SAFETY PROTOCOL:
+       - If user indicates SELF-HARM, SUICIDE, or ABUSE:
+       - Output ONLY this exact string: "FLAG:CRISIS"
+       - Do not output spiritual advice in that specific case."""
+
+    # Try primary model first
     try:
-        # --- Throttle requests ---
-        async with THROTTLE_LOCK:
-            now = asyncio.get_event_loop().time()
-            elapsed = now - LAST_REQUEST_TIME
-            if elapsed < THROTTLE_INTERVAL:
-                wait_time = THROTTLE_INTERVAL - elapsed
-                await asyncio.sleep(wait_time)
-            LAST_REQUEST_TIME = asyncio.get_event_loop().time()
-
-        # --- Call Gemini ---
-        response = await client.aio.models.generate_content(
-            model='gemini-2.0-flash',
-            contents=user_text,
-            config=types.GenerateContentConfig(
-                system_instruction="""
-You are a warm, wise Catholic spiritual companion.
-1. DOCTRINE: Use the RSV-CE Bible. Stick to the Catechism (CCC).
-2. TONE: Compassionate, like a wise elder. Not robotic.
-3. SAFETY PROTOCOL:
-   - If user indicates SELF-HARM, SUICIDE, or ABUSE:
-   - Output ONLY this exact string: "FLAG:CRISIS"
-   - Do not output spiritual advice in that specific case.
-""",
-                max_output_tokens=400,
-                top_k=2,
-                top_p=0.5,
-                temperature=0.5,
-                stop_sequences=['\n\n\n'],
-            ),
+        response = await openrouter_client.chat.completions.create(
+            model=PRIMARY_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_text}
+            ],
+            temperature=0.5,
+            max_tokens=400
         )
-        return response.text
+        return response.choices[0].message.content
 
-    except Exception as e:
-        error_msg = str(e)
+    except Exception as primary_error:
+        error_msg = str(primary_error)
+        logger.error(f"Primary model ({PRIMARY_MODEL}) failed: {error_msg}")
 
-        # --- Quota exceeded handling ---
-        if "RESOURCE_EXHAUSTED" in error_msg or "429" in error_msg:
-            fallback = (
-                "⚠️ Gemini quota exceeded. Please try again later or check your billing plan.\n"
-                "See: https://ai.google.dev/gemini-api/docs/rate-limits"
+        # Try fallback model
+        try:
+            logger.info(f"Attempting fallback to {FALLBACK_MODEL}")
+
+            # Note: For Nova 2 Lite, you can optionally enable reasoning
+            response = await openrouter_client.chat.completions.create(
+                model=FALLBACK_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_text}
+                ],
+                temperature=0.5,
+                max_tokens=400,
+                # Optional: Uncomment to enable reasoning for Nova 2 Lite
+                # extra_body={"reason": True}  # Shows step-by-step reasoning
             )
-            # Notify admin if available
-            if context and ADMIN_ID != 0:
-                try:
-                    await context.bot.send_message(
-                        chat_id=ADMIN_ID,
-                        text=f"⚠️ Gemini quota exhausted.\nUser text: {user_text}\nError: {error_msg}"
-                    )
-                except Exception as alert_exc:
-                    logger.error(f"Failed to alert admin about quota: {alert_exc}")
-            return fallback
+            return response.choices[0].message.content
 
-        # --- Generic error fallback ---
-        logger.error(f"Gemini Error: {error_msg}")
-        return "I am having trouble contemplating right now, please try again in a moment."
+        except Exception as fallback_error:
+            error_msg = str(fallback_error)
+            logger.error(f"Both models failed: {error_msg}")
+
+            # Check for rate limits or quota issues
+            if "quota" in error_msg.lower() or "429" in error_msg or "rate limit" in error_msg.lower():
+                fallback_msg = (
+                    "⚠️ Service temporarily limited. Please try again in a few moments.\n"
+                    "You can also consider supporting the bot's development for premium access."
+                )
+                # Notify admin if available
+                if context and ADMIN_ID != 0:
+                    try:
+                        await context.bot.send_message(
+                            chat_id=ADMIN_ID,
+                            text=f"⚠️ OpenRouter quota/rate limit hit.\nUser text: {user_text[:100]}...\nError: {error_msg}"
+                        )
+                    except Exception as alert_exc:
+                        logger.error(f"Failed to alert admin: {alert_exc}")
+                return fallback_msg
+
+            # Generic error fallback
+            return "I am having trouble contemplating right now. Please try again in a moment."
 
 
 async def safe_admin_alert(bot, admin_id, text):
-    """
-    Send an admin alert with retry logic for robustness.
-
-    Tries up to 3 times with exponential backoff-like delays.
-
-    Parameters
-    ----------
-    bot : telegram.Bot
-        The bot instance used to send the message.
-    admin_id : int
-        The admin chat ID.
-    text : str
-        The alert message content.
-
-    Returns
-    -------
-    bool
-        True if the alert was sent successfully, False otherwise.
-    """
     if admin_id == 0:
         return False
 
@@ -259,13 +220,13 @@ async def safe_admin_alert(bot, admin_id, text):
     return False
 
 
-# Telegram handlers
+# Telegram handlers (unchanged)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     welcome_message = (
         f"👋 Hello {user.first_name}!\n\n"
-        "I’m a spiritual companion bot. "
-        "Send me any message and I’ll reply thoughtfully.\n\n"
+        "I'm Lewis, your spiritual companion bot. "
+        "Send me any message and I'll reply thoughtfully.\n\n"
         "I can help find scripture or pray with you. I am an AI, not a priest."
     )
     await update.message.reply_text(welcome_message)
@@ -274,14 +235,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_message = (
         "📖 *Bot Help*\n\n"
-        "Here’s what I can do:\n"
+        "Here's what I can do:\n"
         "• I can help find scripture or pray with you\n"
-        "• Crisis safety check: if I detect distress, I’ll respond with supportive guidance\n"
+        "• Crisis safety check: if I detect distress, I'll respond with supportive guidance\n"
         "• Admin alert: I notify the owner if a crisis is flagged\n\n"
         "Commands:\n"
         "• /start – Welcome message\n"
         "• /help – Show this help menu\n\n"
-        "Just type any message and I’ll reply!"
+        "Just type any message and I'll reply!"
     )
     await update.message.reply_text(help_message, parse_mode="Markdown")
 
@@ -290,26 +251,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_text = update.message.text
 
-    # Show typing action while waiting for AI
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-
-    # Log user input (async-safe)
     await log_securely(user_id, "USER", user_text)
 
-    # Get AI response
-    ai_reply = await get_gemini_response(user_text)
+    ai_reply = await get_ai_response(user_text, context)
 
-    # Check for None response (error handler)
     if not ai_reply:
         ai_reply = "I am currently unavailable."
 
-    # Safety check
     if "FLAG:CRISIS" in ai_reply:
         final_reply = (
             "I hear deep pain in your words. Please, you are valuable.\n\n"
-            "📌 Contact your Priest(680727236)https://t.me/defpatrick or call emergency services immediately."
+            "📌 Contact your Priest (680727236) https://t.me/defpatrick or call emergency services immediately."
         )
-        # Only notify admin if ID is set and valid
         if ADMIN_ID != 0:
             alert_message = (
                 f"⚠️ Crisis detected!\n\n"
@@ -321,20 +275,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         final_reply = ai_reply
 
-    # Reply and log
     await update.message.reply_text(final_reply)
     await log_securely(user_id, "BOT", final_reply)
 
 
 def main():
-    """
-    Synchronous entrypoint:
-    - Set Windows selector event loop policy (avoids Proactor issues).
-    - Create and set a current event loop in MainThread (PTB expects one).
-    - Run async DB init on that loop.
-    - Start health server thread.
-    - Run telegram polling (blocking).
-    """
     if os.name == 'nt':
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
@@ -355,7 +300,6 @@ def main():
     try:
         application.run_polling()
     finally:
-        #  Cleanup health server after polling stops
         stop_health_server()
         try:
             loop.close()
