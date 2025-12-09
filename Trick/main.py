@@ -70,7 +70,7 @@ openrouter_client = AsyncOpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=OPENROUTER_API_KEY,
     default_headers={
-        "HTTP-Referer": "https://your-bot-url.com",  # Optional but recommended
+        "HTTP-Referer": "https://catholic-companion-bot.onrender.com",  # Optional but recommended
         "X-Title": "Biblical Counselor Bot",  # Optional but recommended
     },
 )
