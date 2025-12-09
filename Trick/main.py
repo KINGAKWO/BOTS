@@ -61,7 +61,7 @@ Token = os.getenv("BOT_TOKEN")
 if not Token:
     raise ValueError("missing token")
 
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")  # Changed from API_KEY
+OPENROUTER_API_KEY = "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"  # Changed from API_KEY
 if not OPENROUTER_API_KEY:
     raise ValueError("missing openrouter key")
 
