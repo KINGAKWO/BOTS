@@ -57,12 +57,18 @@ BOT_USERNAME = "@BiblicalCounselorBot"
 # Load environment variables
 load_dotenv()
 Token = os.getenv("BOT_TOKEN")
+if not Token:
+    raise ValueError("missing token")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")  # Changed from API_KEY
+if not OPENROUTER_API_KEY:
+    raise ValueError("missing openrouter key")
 ENCRYPTION = os.getenv("ENCRYPTION_KEY")
+if not ENCRYPTION:
+    raise ValueError("missing ENCRYPTION")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
 # Check for missing keys - UPDATED
-if not all([Token, OPENROUTER_API_KEY, ENCRYPTION]):
+if not all([Token, OPENROUTER_API_KEY, ENCRYPTION, ADMIN_ID]):
     raise ValueError("Missing Keys in .env file! Check BOT_TOKEN, OPENROUTER_API_KEY, ENCRYPTION_KEY")
 
 # Configure OpenRouter client - NEW
